@@ -1,0 +1,5 @@
+# Name,Type,SubType,Offset,Size,Flags
+nvs,data,nvs,0x9000,0x6000,
+launcher,app,test,0x10000,0x80000,
+atari,app,factory,0x90000,0x100000,
+spiffs,data,spiffs,0x190000,0x270000,
