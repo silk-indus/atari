@@ -1,4 +1,4 @@
-# ESP32 Atari Emulator + SD Launcher
+# ESP32 Atari Emulator + PS2 keyboard + SD Launcher
 
 ESP32 project containing an Atari emulator and a small SD-card launcher. The launcher can browse Atari images on an SD card, copy selected games to SPIFFS, remove stored games, format SPIFFS, and then restart into the Atari application.
 
