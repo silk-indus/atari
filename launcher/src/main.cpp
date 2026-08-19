@@ -33,7 +33,6 @@ static uint8_t io_banner[8][W];
 static uint32_t pal[512];
 struct BrowserEntry {
     string name;
-    string path;
     bool is_dir;
 };
 static vector<BrowserEntry> games;
@@ -126,25 +125,46 @@ static string parent_path(const string& path){
     if(p==string::npos || p<=3) return "/sd";
     return path.substr(0,p);
 }
+static string browser_entry_path(const BrowserEntry& entry){
+    if(entry.name=="..")return parent_path(current_path);
+    return join_path(current_path,entry.name);
+}
+static bool sd_entry_is_dir(const string& base,const struct dirent *de){
+    if(de->d_type==DT_DIR)return true;
+    if(de->d_type!=DT_UNKNOWN)return false;
+    struct stat st;
+    string full=join_path(base,de->d_name);
+    return stat(full.c_str(),&st)==0&&S_ISDIR(st.st_mode);
+}
 static void scan_games(){
     IOHold io;
-    games.clear();
+    vector<BrowserEntry>().swap(games);
     DIR*d=opendir(current_path.c_str());
     if(!d){ current_path="/sd"; d=opendir(current_path.c_str()); }
     if(!d)return;
 
-    // FAT/VFS does not have to return "." or "..". Add parent explicitly.
-    if(current_path != "/sd")
-        games.push_back({"..", parent_path(current_path), true});
-
+    // Count first and reserve once.  Repeated vector growth together with a
+    // duplicated full path used too much heap in large SD directories.
+    size_t count=current_path!="/sd"?1:0;
     struct dirent*de;
     while((de=readdir(d))){
         string n=de->d_name;
         if(n=="." || n=="..") continue;
-        string full=join_path(current_path,n);
-        bool isdir=(de->d_type==DT_DIR);
-        if(de->d_type==DT_UNKNOWN){ struct stat st; if(stat(full.c_str(),&st)==0) isdir=S_ISDIR(st.st_mode); }
-        if(isdir || wanted(n)) games.push_back({n,full,isdir});
+        bool isdir=sd_entry_is_dir(current_path,de);
+        if(isdir || wanted(n))count++;
+    }
+    closedir(d);
+
+    games.reserve(count);
+    if(current_path!="/sd")games.push_back({"..",true});
+
+    d=opendir(current_path.c_str());
+    if(!d)return;
+    while((de=readdir(d))){
+        string n=de->d_name;
+        if(n=="." || n=="..")continue;
+        bool isdir=sd_entry_is_dir(current_path,de);
+        if(isdir || wanted(n))games.push_back({n,isdir});
     }
     closedir(d);
     std::sort(games.begin(),games.end(),[](const BrowserEntry&a,const BrowserEntry&b){
@@ -200,9 +220,10 @@ static string safe_filename(const string& original)
         }
     }
 
-    // Keep the complete SPIFFS path under 30 characters.
-    const size_t MAX_FULL_PATH = 30;
-    const size_t FIXED_PATH_LEN = sizeof("/atari800/") - 1;
+    // SPIFFS object names are limited to 31 bytes including the leading '/'.
+    // Storing games in the root leaves 30 bytes for the filename and suffix.
+    const size_t MAX_FULL_PATH = 31;
+    const size_t FIXED_PATH_LEN = sizeof("/") - 1;
     const size_t MAX_NAME = MAX_FULL_PATH - FIXED_PATH_LEN;
 
     if (out.size() > MAX_NAME) {
@@ -242,6 +263,13 @@ static bool refresh_spiffs_cache()
 
 static size_t spiffs_free_bytes()
 {
+    return cached_spiffs_total > cached_spiffs_used
+               ? cached_spiffs_total - cached_spiffs_used
+               : 0;
+}
+
+static size_t spiffs_safe_writable_bytes()
+{
     // SPIFFS can reliably use only about 75% of its partition.  Treating the
     // whole value returned by esp_spiffs_info() as writable lets the launcher
     // reach a state where deletes succeed but subsequent writes still fail.
@@ -253,7 +281,7 @@ static size_t spiffs_free_bytes()
 
 static size_t effective_free_for_pending()
 {
-    size_t freeb = spiffs_free_bytes();
+    size_t freeb = spiffs_safe_writable_bytes();
     // If the same sanitized destination already exists, it will be replaced,
     // so its current size is reclaimable for this copy.
     freeb += pending_existing_size;
@@ -268,7 +296,7 @@ static bool enough_space_for_pending()
 
 // Refresh the filesystem figures after every delete and immediately before
 // opening the destination.  The actual write stays below the safe SPIFFS
-// occupancy limit enforced by spiffs_free_bytes().
+// occupancy limit enforced by spiffs_safe_writable_bytes().
 static bool prepare_spiffs_for_pending_copy()
 {
     if (!refresh_spiffs_cache()) return false;
@@ -279,14 +307,14 @@ static void scan_stored_games()
 {
     IOHold io;
     stored_games.clear();
-    DIR *d = opendir("/atari800");
+    DIR *d = opendir("/");
     if (!d) return;
     struct dirent *de;
     while ((de = readdir(d)) != nullptr) {
         if (de->d_type == DT_DIR) continue;
         string n = de->d_name;
         if (!wanted(n)) continue;
-        string path = string("/atari800/") + n;
+        string path = string("/") + n;
         // Do not offer the destination itself as a separate deletion choice;
         // it is automatically replaced if the selected SD game has same name.
         if (path == pending_dest) continue;
@@ -304,10 +332,6 @@ static bool delete_marked_games(){ IOHold io; int n=0, failed=0; for(size_t i=0;
 static bool copy_pending_game()
 {
     IOHold io;
-    struct stat dst_dir_st;
-    if (stat("/atari800", &dst_dir_st) != 0)
-        mkdir("/atari800", 0777);
-
     size_t fs_total=cached_spiffs_total, fs_used=cached_spiffs_used;
     size_t fs_free=spiffs_free_bytes();
 
@@ -323,8 +347,8 @@ static bool copy_pending_game()
         return false;
     }
 
-    // Remove same-name destination before GC so its pages can also be
-    // reclaimed.  Never silently continue when the removal fails.
+    // Remove a same-name destination before the space check so its occupied
+    // bytes are reflected by the refreshed SPIFFS figures.
     if (pending_existing_size && remove_io(pending_dest) != 0) {
         Serial.printf("DESTINATION DELETE ERROR: %s errno=%d\n",
                       pending_dest.c_str(), errno);
@@ -405,7 +429,7 @@ static bool prepare_game(const string& source)
         Serial.printf("Cannot stat %s\n", pending_source.c_str());
         return false;
     }
-    pending_dest = string("/atari800/") + safe_filename(path_name(source));
+    pending_dest = string("/") + safe_filename(path_name(source));
     pending_existing_size = file_size(pending_dest);
     return true;
 }
@@ -415,7 +439,7 @@ static int start_copy_batch()
     IOHold io;
     vector<string> queue=copy_marked;
     if(queue.empty()&&!games.empty()&&!games[selected].is_dir)
-        queue.push_back(games[selected].path);
+        queue.push_back(browser_entry_path(games[selected]));
 
     int copied=0;
     for(const string& source:queue){
@@ -439,8 +463,8 @@ static void draw_ui(const char*status=0){
     clear_screen(0x00); rect(28,20,328,200,0x01); rect(32,24,320,192,0x00);
     text(48,34,"ESP32 ATARI - SD LAUNCHER",0x0F,0x00);
 
-    size_t fs_total=cached_spiffs_total, fs_used=cached_spiffs_used;
-    size_t fs_free=fs_total>fs_used ? fs_total-fs_used : 0;
+    size_t fs_total=cached_spiffs_total;
+    size_t fs_free=spiffs_free_bytes();
     char fsline[48];
     snprintf(fsline,sizeof(fsline),"SPIFFS FREE %u KB / %u KB",
              (unsigned)(fs_free/1024),(unsigned)(fs_total/1024));
@@ -458,7 +482,7 @@ static void draw_ui(const char*status=0){
         int i=scroll_pos+j; if(i>=(int)games.size())break;
         string n;
         if(games[i].is_dir){n=string("[DIR] ")+games[i].name;if(n.size()>34)n.resize(34);}
-        else n=file_label_with_extension(is_copy_marked(games[i].path)?"[*] ":"[ ] ",games[i].name,34);
+        else n=file_label_with_extension(is_copy_marked(browser_entry_path(games[i]))?"[*] ":"[ ] ",games[i].name,34);
         int y=86+j*8; if(i==selected){rect(44,y,288,8,0x07);text(48,y,n.c_str(),0x00,0x07);} else text(48,y,n.c_str(),games[i].is_dir?0x0A:0x0F,0x00);
     }
 }
@@ -509,7 +533,7 @@ static bool format_spiffs_now()
 static void draw_manual_delete_dialog(const char*status=0){
  video_sync();
  clear_screen(0x00); rect(20,18,344,204,0x01); rect(24,22,336,196,0x00); text(40,30,"DELETE GAMES FROM SPIFFS",0x0E,0x00);
- size_t total=cached_spiffs_total,used=cached_spiffs_used; char line[48]; snprintf(line,sizeof(line),"FREE %uK / %uK",(unsigned)((total>used?total-used:0)/1024),(unsigned)(total/1024)); text(40,44,line,0x0F,0x00);
+ size_t total=cached_spiffs_total; char line[48]; snprintf(line,sizeof(line),"FREE %uK / %uK",(unsigned)(spiffs_free_bytes()/1024),(unsigned)(total/1024)); text(40,44,line,0x0F,0x00);
  text(40,58,"INS MARK/UNMARK  DEL DELETE",0x0A,0x00); text(40,70,"PGUP/PGDN MOVE  ESC BACK",0x0A,0x00); if(status)text(40,202,status,0x0E,0x00);
  int visible=13; if(delete_selected<delete_scroll)delete_scroll=delete_selected; if(delete_selected>=delete_scroll+visible)delete_scroll=delete_selected-visible+1;
  for(int j=0;j<visible;j++){int i=delete_scroll+j;if(i>=(int)stored_games.size())break;string n=stored_games[i].name;if(n.size()>23)n.resize(23);char mark=(i<(int)delete_marked.size()&&delete_marked[i])?'*':' ';snprintf(line,sizeof(line),"%c %-23s %3uK",mark,n.c_str(),(unsigned)((stored_games[i].size+1023)/1024));int y=84+j*8;if(i==delete_selected){rect(36,y,304,8,0x07);text(40,y,line,0x00,0x07);}else text(40,y,line,0x0F,0x00);} if(stored_games.empty())text(40,92,"NO ATR/XEX FILES",0x0C,0x00);
@@ -578,7 +602,9 @@ static bool f12_pressed(unsigned ms){
 }
 
 static void process_keys(){
- static uint8_t last=0; static uint32_t repeat_at=0; static bool f2_latched=false; const uint32_t delay1=450,rate=90; const int page=12; uint8_t k=menu_key; uint32_t now=millis();
+ static uint8_t last=0; static uint32_t repeat_at=0; static bool f2_latched=false; static bool f12_latched=true; const uint32_t delay1=450,rate=90; const int page=12; uint8_t k=menu_key; uint32_t now=millis();
+ if(!k)f12_latched=false;
+ if(k==0x45){if(!f12_latched){f12_latched=true;draw_ui("RESTARTING...");delay(50);ESP.restart();}return;}
  if(k==0x3B&&!f2_latched&&!delete_mode&&!format_mode&&!manual_delete_mode){f2_latched=true;format_mode=true;last=0;draw_format_dialog();return;} if(k!=0x3B)f2_latched=false;
  if(format_mode){if(!k){last=0;return;}if(k==last)return;last=k;if(k==0x29){format_mode=false;draw_ui("FORMAT CANCELLED");}else if(k==0x28){draw_format_dialog("FORMATTING...");bool ok=format_spiffs_now();format_mode=false;draw_ui(ok?"SPIFFS FORMATTED":"FORMAT FAILED");}return;}
  if(manual_delete_mode){
@@ -594,9 +620,9 @@ static void process_keys(){
     if(k!=0x4C) manual_del_armed=true;
     bool nav=k==0x52||k==0x51||k==0x4B||k==0x4E;if(nav){bool fire=false;if(k!=last){last=k;repeat_at=now+delay1;fire=true;}else if((int32_t)(now-repeat_at)>=0){repeat_at=now+rate;fire=true;}if(!fire)return;int n=stored_games.size();if(n){if(k==0x52)delete_selected--;else if(k==0x51)delete_selected++;else if(k==0x4B)delete_selected-=page;else delete_selected+=page;if(delete_selected<0)delete_selected=0;if(delete_selected>=n)delete_selected=n-1;}draw_manual_delete_dialog();return;}if(k==last)return;last=k;if(k==0x29){manual_delete_mode=false;draw_ui();}else if(k==0x49&&delete_selected<(int)delete_marked.size()){delete_marked[delete_selected]=!delete_marked[delete_selected];draw_manual_delete_dialog();}else if(k==0x4C && manual_del_armed){bool any=false;for(bool m:delete_marked)if(m){any=true;break;}if(any){bool ok=delete_marked_games();draw_manual_delete_dialog(ok?"MARKED FILES DELETED":"DELETE ERROR");}else draw_manual_delete_dialog("NOTHING MARKED");}return;}
  if(delete_mode){if(!k){last=0;repeat_at=0;return;}bool nav=k==0x52||k==0x51||k==0x4B||k==0x4E;if(nav){bool fire=false;if(k!=last){last=k;repeat_at=now+delay1;fire=true;}else if((int32_t)(now-repeat_at)>=0){repeat_at=now+rate;fire=true;}if(!fire)return;int n=stored_games.size();if(n){if(k==0x52)delete_selected--;else if(k==0x51)delete_selected++;else if(k==0x4B)delete_selected-=page;else delete_selected+=page;if(delete_selected<0)delete_selected=0;if(delete_selected>=n)delete_selected=n-1;}draw_delete_dialog();return;}if(k==last)return;last=k;if(k==0x29){delete_mode=false;draw_ui("DELETE CANCELLED");}else if(k==0x28&&!stored_games.empty()){string deleted_path=stored_games[delete_selected].path;if(remove_io(deleted_path)!=0){Serial.printf("DELETE FAILED: %s errno=%d\\n",deleted_path.c_str(),errno);draw_delete_dialog("DELETE ERROR");return;}if(!refresh_spiffs_cache()){draw_delete_dialog("SPIFFS INFO ERROR");return;}delay(50);scan_stored_games();if(enough_space_for_pending()){delete_mode=false;if(copy_pending_game()){auto mark=std::find(copy_marked.begin(),copy_marked.end(),pending_source);if(mark!=copy_marked.end())copy_marked.erase(mark);int more=copy_marked.empty()?0:start_copy_batch();if(delete_mode)draw_delete_dialog("MORE SPACE NEEDED");else if(more<0)draw_ui("COPY/WRITE ERROR");else draw_ui("COPY DONE - NO RESTART");}else draw_ui("COPY/WRITE ERROR");}else draw_delete_dialog("MORE SPACE NEEDED");}return;}
- if(!k){last=0;repeat_at=0;return;} if(k==0x4C&&k!=last){last=k;last=0;repeat_at=0;open_manual_delete_dialog();draw_manual_delete_dialog();return;} if(k==0x49&&k!=last){last=k;if(!games.empty()&&!games[selected].is_dir)toggle_copy_mark(games[selected].path);draw_ui();return;}
+ if(!k){last=0;repeat_at=0;return;} if(k==0x4C&&k!=last){last=k;last=0;repeat_at=0;open_manual_delete_dialog();draw_manual_delete_dialog();return;} if(k==0x49&&k!=last){last=k;if(!games.empty()&&!games[selected].is_dir)toggle_copy_mark(browser_entry_path(games[selected]));draw_ui();return;}
  bool nav=k==0x52||k==0x51||k==0x4B||k==0x4E;if(nav){bool fire=false;if(k!=last){last=k;repeat_at=now+delay1;fire=true;}else if((int32_t)(now-repeat_at)>=0){repeat_at=now+rate;fire=true;}if(!fire)return;int n=games.size();if(n){if(k==0x52)selected--;else if(k==0x51)selected++;else if(k==0x4B)selected-=page;else selected+=page;if(selected<0)selected=0;if(selected>=n)selected=n-1;}draw_ui();return;}
- if(k==last)return;last=k;if(k==0x29){if(go_parent())draw_ui("PARENT");else{draw_ui("STARTING ATARI...");delay(100);boot_atari_once();}}else if(k==0x28&&!games.empty()){if(games[selected].is_dir&&copy_marked.empty()){enter_directory(games[selected].path);draw_ui("FOLDER");}else{int copied=start_copy_batch();if(delete_mode)draw_delete_dialog();else if(copied<0)draw_ui("COPY/WRITE ERROR");else if(copied==0)draw_ui("NOTHING COPIED");else draw_ui("COPY DONE - NO RESTART");}}
+ if(k==last)return;last=k;if(k==0x29){if(go_parent())draw_ui("PARENT");else{draw_ui("STARTING ATARI...");delay(100);boot_atari_once();}}else if(k==0x28&&!games.empty()){if(games[selected].is_dir&&copy_marked.empty()){enter_directory(browser_entry_path(games[selected]));draw_ui("FOLDER");}else{int copied=start_copy_batch();if(delete_mode)draw_delete_dialog();else if(copied<0)draw_ui("COPY/WRITE ERROR");else if(copied==0)draw_ui("NOTHING COPIED");else draw_ui("COPY DONE - NO RESTART");}}
 }
 
 void setup(){
@@ -607,7 +633,7 @@ void setup(){
     if(!mount_spiffs()){ boot_atari_once(); return; }
     if(!refresh_spiffs_cache()){ boot_atari_once(); return; }
     if(!mount_sd()){ boot_atari_once(); return; }
-    { DIR *d=opendir("/sd/atari800"); if(d){ closedir(d); current_path="/sd/atari800"; } else current_path="/sd"; }
+    current_path="/sd";
     scan_games();
     fb=(uint8_t*)heap_caps_malloc(W*H,MALLOC_CAP_8BIT); if(!fb){boot_atari_once();return;}
     for(int y=0;y<H;y++)rows[y]=fb+y*W;

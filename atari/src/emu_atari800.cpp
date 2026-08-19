@@ -1265,6 +1265,8 @@ public:
 
         // no idea. just go with defaults of xl
         string host = path.substr(0,path.find_last_of("/"));
+        if (host.empty())
+            host = "/"; // a file directly in the SPIFFS root
         return "-xl \"" + path + "\"" + " -H1 \"" + host + "\"";
     }
 

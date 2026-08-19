@@ -583,7 +583,9 @@ public:
     // map to sort
     void read_directory(const char* name)
     {
-        _path = name;
+        // Open "/" as requested, but store an empty prefix internally so
+        // legacy code which appends "/file" also produces exactly "/file".
+        _path = (name && strcmp(name,"/") == 0) ? "" : (name ? name : "");
         _files.clear();
         std::map<std::string,int> files;  // sort by name
         DIR* dirp = opendir(name);
@@ -603,6 +605,23 @@ public:
         for (auto& p : files)
             _files.push_back(p.first);
         closedir(dirp);
+    }
+
+    string media_path(const string& name) const
+    {
+        if (_path.empty() || _path == "/")
+            return "/" + name;
+        if (_path[_path.size()-1] == '/')
+            return _path + name;
+        return _path + "/" + name;
+    }
+
+    string pref_key(const string& key) const
+    {
+        // Preserve the old Atari keys ("arecent", "adisk0", ...), even
+        // though media now live directly in the SPIFFS root.
+        char prefix = (_emu && !_emu->name.empty()) ? _emu->name[0] : 'e';
+        return string(1,prefix) + key;
     }
 
     void draw_menu(int x, const char* name, bool selected)
@@ -678,7 +697,7 @@ public:
     void insert(const string& path, int flags)
     {
         set_pref("recent",path);
-        _emu->insert(_path + "/" + path,flags);
+        _emu->insert(media_path(path),flags);
     }
 
     void insert_disk(int dindex, int findex, int reboot = 0)
@@ -689,7 +708,7 @@ public:
         set_pref(disk_name(dindex),file);
         if (dindex == 0)
             set_pref("recent",file);
-        _emu->insert(_path + "/" + file,reboot,dindex);
+        _emu->insert(media_path(file),reboot,dindex);
     }
 
     void enter(int mods)
@@ -987,7 +1006,7 @@ public:
             _dirty = false;
             _info.clear();
             int index = _tab_hilited[0];
-            _emu->info(_path + "/" + _files[index],_info);
+            _emu->info(media_path(_files[index]),_info);
         }
         int i;
         for (i = 0; i < (int)_info.size(); i++)
@@ -998,13 +1017,13 @@ public:
     string get_pref(const string& key)
     {
         char buf[256] = {0};
-        sys_get_pref((_path[1]+key).c_str(),buf,sizeof(buf)-1); // keys are limited to 15 bytes. great
+        sys_get_pref(pref_key(key).c_str(),buf,sizeof(buf)-1); // keys are limited to 15 bytes. great
         return buf;
     }
 
     void set_pref(const string& key, const string& value)
     {
-        sys_set_pref((_path[1]+key).c_str(),value.c_str());     // first char discrminates current emus at least
+        sys_set_pref(pref_key(key).c_str(),value.c_str());     // first char discriminates current emus
     }
 
     void insert_default(const char* path)

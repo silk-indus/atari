@@ -967,27 +967,32 @@ void IRAM_ATTR test_wave(volatile void *vbuf, int t = 1)
     }
 }
 
-// Wait for blanking before starting drawing
-// avoids tearing in our unsynchonized world
+// Run at most one emulated frame for each composite-video frame.
 #ifdef ESP_PLATFORM
 void video_sync()
 {
     if (!_lines)
         return;
-    int n = 0;
-    if (_pal_)
-    {
-        const int active_end = _active_lines + 32; // 240 + 32 = 272
 
-        if (_line_counter < active_end)
-            n = (active_end - _line_counter) * 1000 / 15600;
-    }
-    else
+    static uint32_t last_frame = UINT32_MAX;
+    uint32_t current_frame = _frame_counter;
+
+    // The first call, or a frame boundary crossed while emulating the
+    // previous frame: consume that boundary without another delay.
+    if (current_frame != last_frame)
     {
-        if (_line_counter < _active_lines)
-            n = (_active_lines - _line_counter) * 1000 / 15720;
+        last_frame = current_frame;
+        return;
     }
-    vTaskDelay(n + 1);
+
+    // Otherwise wait for the video ISR to finish the current frame.
+    do
+    {
+        vTaskDelay(1);
+        current_frame = _frame_counter;
+    } while (current_frame == last_frame);
+
+    last_frame = current_frame;
 }
 #endif
 

@@ -64,8 +64,7 @@ bool _inited = false;
 
 void emu_init()
 {
-  std::string folder = "/" + _emu->name;
-  gui_start(_emu, folder.c_str());
+  gui_start(_emu, "/");
   _drawn = _frame_counter;
 }
 
@@ -126,7 +125,9 @@ void setup()
   emu_init();
   video_init(_emu->cc_width, _emu->flavor, _emu->composite_palette(), _emu->standard); // start the A/V pump on app core
 #else
-  xTaskCreatePinnedToCore(emu_task, "emu_task", EMULATOR == EMU_NES ? 5 * 1024 : 3 * 1024, NULL, 0, NULL, 0); // nofrendo needs 5k word stack, start on core 0
+  // Root-directory scanning plus direct XEX loading needs more than the old
+  // 3 KB Atari stack.
+  xTaskCreatePinnedToCore(emu_task, "emu_task", 5 * 1024, NULL, 0, NULL, 0);
 #endif
 }
 
