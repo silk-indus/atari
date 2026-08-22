@@ -887,6 +887,7 @@ public:
                     move_tab(1);
                     break;
                 case 224:   // left control key
+                case 228:   // right control key
                     break;  // FIRE
             }
         }
@@ -1175,14 +1176,20 @@ static void keyboard(const uint8_t* d, int len)
 
 
     // --------------------------------------------------------
-    // Left Shift -> Atari joystick FIRE
+    // Right Ctrl -> Atari joystick 1 FIRE
+    // Left Ctrl  -> Atari joystick 2 FIRE
     // --------------------------------------------------------
 
-    bool old_lshift = (_last_mods & KEY_MOD_LSHIFT) != 0;
-    bool new_lshift = (mods       & KEY_MOD_LSHIFT) != 0;
+    bool old_lctrl = (_last_mods & KEY_MOD_LCTRL) != 0;
+    bool new_lctrl = (mods       & KEY_MOD_LCTRL) != 0;
+    bool old_rctrl = (_last_mods & KEY_MOD_RCTRL) != 0;
+    bool new_rctrl = (mods       & KEY_MOD_RCTRL) != 0;
 
-    if (old_lshift != new_lshift) {
-        gui_key(225, new_lshift ? 1 : 0, mods);
+    if (old_lctrl != new_lctrl) {
+        gui_key(224, new_lctrl ? 1 : 0, mods);
+    }
+    if (old_rctrl != new_rctrl) {
+        gui_key(228, new_rctrl ? 1 : 0, mods);
     }
 
 

@@ -1098,13 +1098,21 @@ public:
     {
         INPUT_key_code = -1;
 
-        // map arrow keys to joy0
+        // Joystick 1: arrow keys + Right Ctrl fire
+        // Joystick 2: W/A/S/D + Left Ctrl fire
+        // Joystick-only keys are consumed here so they do not also type on the Atari keyboard.
         switch (keycode) {
-            case 82: joy(0,pressed,INPUT_STICK_FORWARD); break;
-            case 81: joy(0,pressed,INPUT_STICK_BACK); break;
-            case 80: joy(0,pressed,INPUT_STICK_LEFT); break;
-            case 79: joy(0,pressed,INPUT_STICK_RIGHT); break;
-            case 225: trig(0,pressed); break; // left shift key
+            case 82: joy(0,pressed,INPUT_STICK_FORWARD); break; // Up
+            case 81: joy(0,pressed,INPUT_STICK_BACK);    break; // Down
+            case 80: joy(0,pressed,INPUT_STICK_LEFT);    break; // Left
+            case 79: joy(0,pressed,INPUT_STICK_RIGHT);   break; // Right
+            case 228: trig(0,pressed);                    return; // Right Ctrl
+            case 224: trig(1,pressed);                    return; // Left Ctrl
+
+            case 26: joy(1,pressed,INPUT_STICK_FORWARD); return; // W
+            case 22: joy(1,pressed,INPUT_STICK_BACK);    return; // S
+            case 4:  joy(1,pressed,INPUT_STICK_LEFT);    return; // A
+            case 7:  joy(1,pressed,INPUT_STICK_RIGHT);   return; // D
         }
 
         if (keycode >= 128)
