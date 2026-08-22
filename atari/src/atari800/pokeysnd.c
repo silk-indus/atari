@@ -167,7 +167,9 @@ int mz_clear_regs = 0;
 
 //int POKEYSND_enable_new_pokey = TRUE;
 int POKEYSND_enable_new_pokey = FALSE; // TODO
-int POKEYSND_bienias_fix = TRUE;  /* when TRUE, high frequencies get emulated: better sound but slower */
+/* The ESP video/audio path outputs one sample per scanline (about 15.6 kHz).
+   Do not alias POKEY frequencies above the reproducible audio band. */
+int POKEYSND_bienias_fix = FALSE;
 #if defined(__PLUS) && !defined(_WX_)
 #define BIENIAS_FIX (g_Sound.nBieniasFix)
 #else

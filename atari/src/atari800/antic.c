@@ -2294,6 +2294,12 @@ static void draw_antic_6(int nchars, const UBYTE *antic_memptr, UWORD *ptr, cons
 		}
 		h = (h ^ (uint32_t)chbase_20) * 16777619u;
 		h = (h ^ (uint32_t)dctr) * 16777619u;
+		/* Fine scrolling changes where otherwise identical mode-6 data is
+		   drawn. These values are part of the rendered result and therefore
+		   must participate in the dirty-line fingerprint. */
+		h = (h ^ (uint32_t)((IR & 0x10) ? ANTIC_HSCROL : 0)) * 16777619u;
+		h = (h ^ (uint32_t)(ptr - scrn_ptr)) * 16777619u;
+		h = (h ^ (uint32_t)nchars) * 16777619u;
 		h = (h ^ (uint32_t)GTIA_PRIOR) * 16777619u;
 		h = (h ^ (uint32_t)ANTIC_cl[C_BAK]) * 16777619u;
 		h = (h ^ (uint32_t)ANTIC_cl[C_PF0]) * 16777619u;
